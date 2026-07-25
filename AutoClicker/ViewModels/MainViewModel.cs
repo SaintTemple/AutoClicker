@@ -14,7 +14,7 @@ public sealed class MainViewModel : ViewModelBase
     private readonly IAutoClickService _autoClickService;
     private readonly IHotkeyService _hotkeyService;
 
-    // 统一串行化“开始/停止”及热键触发的启停，避免并发状态冲突
+    // 统一串行化“开始/停止”及热键触发的启停，避免并发状态冲突。
     private readonly SemaphoreSlim _startStopLock = new(1, 1);
 
     private string _intervalValue = "100";
@@ -30,6 +30,7 @@ public sealed class MainViewModel : ViewModelBase
     private bool _isCapturingKey;
     private bool _isStartStopBusy;
     private int _activeRunVersion;
+    private int _isShuttingDown;
     private CaptureTarget _captureTarget = CaptureTarget.None;
 
     private readonly AsyncRelayCommand _startCommand;
@@ -182,7 +183,8 @@ public sealed class MainViewModel : ViewModelBase
 
     public bool IsRunning => Status == AppStatus.Running;
 
-    public bool IsConfigurationEnabled => !IsRunning && !IsStartStopBusy;
+    public bool IsConfigurationEnabled =>
+        Status == AppStatus.Stopped && !IsStartStopBusy;
 
     public bool IsCapturingKey
     {
@@ -209,21 +211,44 @@ public sealed class MainViewModel : ViewModelBase
         }
     }
 
-    public string CurrentStatusText => IsRunning ? "运行中" : "未运行";
+    public string CurrentStatusText => Status switch
+    {
+        AppStatus.Starting => "启动中",
+        AppStatus.Running => "运行中",
+        AppStatus.Stopping => "停止中",
+        _ => "未运行"
+    };
+
     public string SelectedKeyboardKeyDisplay => GetKeyDisplayName(SelectedKeyboardKey);
     public string HotkeyDisplay => GetKeyDisplayName(Hotkey);
     public string PendingHotkeyDisplay => GetKeyDisplayName(PendingHotkey);
+    public bool IsIntervalValid => TryGetIntervalMilliseconds(out _, out _);
+    public string IntervalValidationText =>
+        TryGetIntervalMilliseconds(out _, out var error) ? string.Empty : error;
 
     public string IntervalPreviewText
     {
         get
         {
-            if (!TryGetIntervalMilliseconds(out var intervalMs, out _))
+            if (!TryGetIntervalMilliseconds(out var intervalMs, out _)
+                || !TryParseIntervalValue(out var value, out _))
             {
-                return "间隔设置无效";
+                return "当前设置不可用";
             }
 
-            return $"每 {intervalMs} 毫秒触发一次";
+            if (SelectedIntervalUnit == ClickIntervalUnit.Milliseconds)
+            {
+                return $"每 {intervalMs} 毫秒触发一次";
+            }
+
+            var valueText = value.ToString(
+                "0.############################",
+                CultureInfo.InvariantCulture);
+            var unitText = SelectedIntervalUnit == ClickIntervalUnit.Seconds
+                ? "秒"
+                : "分钟";
+
+            return $"每 {valueText} {unitText}触发一次（{intervalMs} 毫秒）";
         }
     }
 
@@ -241,26 +266,46 @@ public sealed class MainViewModel : ViewModelBase
         private set => SetProperty(ref _isErrorMessage, value);
     }
 
-    public bool CanStart => !IsRunning && !IsCapturingKey && !IsStartStopBusy && TryBuildConfiguration(out _, out _);
+    public bool CanStart =>
+        Status == AppStatus.Stopped
+        && !IsCapturingKey
+        && !IsStartStopBusy
+        && TryBuildConfiguration(out _, out _);
+
     public bool CanStop => IsRunning && !IsStartStopBusy;
     public bool CanApplyHotkey => IsConfigurationEnabled && !IsCapturingKey;
 
     public void Initialize(Window window)
     {
-        _hotkeyService.Initialize(window);
+        try
+        {
+            _hotkeyService.Initialize(window);
 
-        if (_hotkeyService.TryUpdateHotkey(Hotkey, out var error))
-        {
-            SetStatus($"默认启停热键：{GetKeyDisplayName(Hotkey)}。");
-        }
-        else
-        {
+            if (_hotkeyService.TryUpdateHotkey(Hotkey, out var error))
+            {
+                Hotkey = _hotkeyService.CurrentHotkey;
+                PendingHotkey = Hotkey;
+                SetStatus($"默认启停热键：{GetKeyDisplayName(Hotkey)}。");
+                return;
+            }
+
+            Hotkey = _hotkeyService.CurrentHotkey;
             SetStatus($"默认热键注册失败：{error}", true);
+        }
+        catch (Exception ex)
+        {
+            Hotkey = Key.None;
+            SetStatus($"全局热键初始化失败：{ex.Message}", true);
         }
     }
 
     public async Task ShutdownAsync()
     {
+        if (Interlocked.Exchange(ref _isShuttingDown, 1) != 0)
+        {
+            return;
+        }
+
         IsCapturingKey = false;
         _captureTarget = CaptureTarget.None;
 
@@ -268,8 +313,13 @@ public sealed class MainViewModel : ViewModelBase
         {
             await ExecuteStartStopLockedAsync(async () =>
             {
+                if (_autoClickService.IsRunning)
+                {
+                    Status = AppStatus.Stopping;
+                }
+
                 await _autoClickService.StopAsync();
-                Status = _autoClickService.IsRunning ? AppStatus.Running : AppStatus.Stopped;
+                Status = AppStatus.Stopped;
             });
         }
         catch (Exception ex)
@@ -279,6 +329,8 @@ public sealed class MainViewModel : ViewModelBase
         }
         finally
         {
+            _hotkeyService.HotkeyPressed -= OnHotkeyPressed;
+            _autoClickService.Faulted -= OnAutoClickFaulted;
             _hotkeyService.Dispose();
         }
     }
@@ -328,6 +380,13 @@ public sealed class MainViewModel : ViewModelBase
                 return true;
             }
 
+            if (SelectedTriggerMode == TriggerMode.Keyboard
+                && SelectedKeyboardKey == key)
+            {
+                SetStatus("启停热键不能与被连点按键相同。", true);
+                return true;
+            }
+
             PendingHotkey = key;
             IsCapturingKey = false;
             _captureTarget = CaptureTarget.None;
@@ -352,9 +411,9 @@ public sealed class MainViewModel : ViewModelBase
             : "请按下新的启停热键，按 Esc 可取消。");
     }
 
-    private Task StartAsync()
+    private async Task StartAsync()
     {
-        return ExecuteStartStopLockedAsync(async () =>
+        await ExecuteStartStopLockedAsync(async () =>
         {
             if (IsCapturingKey)
             {
@@ -368,6 +427,7 @@ public sealed class MainViewModel : ViewModelBase
                 return;
             }
 
+            Status = AppStatus.Starting;
             await _autoClickService.StartAsync(config);
             _activeRunVersion = _autoClickService.CurrentRunVersion;
             Status = AppStatus.Running;
@@ -375,9 +435,9 @@ public sealed class MainViewModel : ViewModelBase
         });
     }
 
-    private Task StopAsync()
+    private async Task StopAsync()
     {
-        return ExecuteStartStopLockedAsync(async () =>
+        await ExecuteStartStopLockedAsync(async () =>
         {
             if (!IsRunning)
             {
@@ -385,6 +445,7 @@ public sealed class MainViewModel : ViewModelBase
                 return;
             }
 
+            Status = AppStatus.Stopping;
             await _autoClickService.StopAsync();
             Status = _autoClickService.IsRunning ? AppStatus.Running : AppStatus.Stopped;
             SetStatus(Status == AppStatus.Stopped ? "连点已停止。" : "停止请求已发送。");
@@ -414,18 +475,33 @@ public sealed class MainViewModel : ViewModelBase
         var previousHotkey = Hotkey;
         if (_hotkeyService.TryUpdateHotkey(PendingHotkey, out var error))
         {
-            Hotkey = PendingHotkey;
+            Hotkey = _hotkeyService.CurrentHotkey;
+            PendingHotkey = Hotkey;
             SetStatus($"启停热键已更新为：{GetKeyDisplayName(Hotkey)}。");
             return Task.CompletedTask;
         }
 
-        PendingHotkey = previousHotkey;
+        Hotkey = _hotkeyService.CurrentHotkey;
+        if (Hotkey != Key.None)
+        {
+            PendingHotkey = Hotkey;
+        }
+        else
+        {
+            PendingHotkey = previousHotkey;
+        }
+
         SetStatus($"热键更新失败：{error}", true);
         return Task.CompletedTask;
     }
 
     private void OnHotkeyPressed(object? sender, EventArgs e)
     {
+        if (Volatile.Read(ref _isShuttingDown) != 0)
+        {
+            return;
+        }
+
         _ = ToggleFromHotkeyAsync();
     }
 
@@ -438,10 +514,11 @@ public sealed class MainViewModel : ViewModelBase
 
         try
         {
-            await ExecuteStartStopLockedAsync(async () =>
+            await TryExecuteStartStopLockedAsync(async () =>
             {
                 if (IsRunning)
                 {
+                    Status = AppStatus.Stopping;
                     await _autoClickService.StopAsync();
                     Status = _autoClickService.IsRunning ? AppStatus.Running : AppStatus.Stopped;
                     SetStatus(Status == AppStatus.Stopped ? "已通过热键停止。" : "热键停止请求已发送。");
@@ -454,6 +531,7 @@ public sealed class MainViewModel : ViewModelBase
                         return;
                     }
 
+                    Status = AppStatus.Starting;
                     await _autoClickService.StartAsync(config);
                     _activeRunVersion = _autoClickService.CurrentRunVersion;
                     Status = AppStatus.Running;
@@ -514,13 +592,46 @@ public sealed class MainViewModel : ViewModelBase
         await _startStopLock.WaitAsync();
         try
         {
-            IsStartStopBusy = true;
+            await ExecuteWithStartStopLockHeldAsync(action);
+        }
+        finally
+        {
+            _startStopLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// 热键切换不排队：若启停转换正在进行，忽略本次重复热键，
+    /// 防止“停止”完成后又被排队的第二次按键重新启动。
+    /// </summary>
+    private async Task<bool> TryExecuteStartStopLockedAsync(Func<Task> action)
+    {
+        if (!await _startStopLock.WaitAsync(0))
+        {
+            return false;
+        }
+
+        try
+        {
+            await ExecuteWithStartStopLockHeldAsync(action);
+            return true;
+        }
+        finally
+        {
+            _startStopLock.Release();
+        }
+    }
+
+    private async Task ExecuteWithStartStopLockHeldAsync(Func<Task> action)
+    {
+        IsStartStopBusy = true;
+        try
+        {
             await action();
         }
         finally
         {
             IsStartStopBusy = false;
-            _startStopLock.Release();
         }
     }
 
@@ -531,6 +642,12 @@ public sealed class MainViewModel : ViewModelBase
 
         if (!TryGetIntervalMilliseconds(out var intervalMs, out errorMessage))
         {
+            return false;
+        }
+
+        if (Hotkey == Key.None)
+        {
+            errorMessage = "请先设置一个可用的全局启停热键。";
             return false;
         }
 
@@ -585,30 +702,32 @@ public sealed class MainViewModel : ViewModelBase
             return false;
         }
 
-        if (!double.TryParse(IntervalValue, NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+        if (!TryParseIntervalValue(out var value, out errorMessage))
         {
-            errorMessage = "连点间隔格式无效，请输入正数（小数点请使用 .）。";
             return false;
         }
 
-        if (value <= 0)
+        decimal multiplier;
+        switch (SelectedIntervalUnit)
         {
-            errorMessage = "连点间隔必须为正数。";
-            return false;
+            case ClickIntervalUnit.Milliseconds:
+                multiplier = 1m;
+                break;
+            case ClickIntervalUnit.Seconds:
+                multiplier = 1000m;
+                break;
+            case ClickIntervalUnit.Minutes:
+                multiplier = 60000m;
+                break;
+            default:
+                errorMessage = "未知的时间单位。";
+                return false;
         }
-
-        decimal multiplier = SelectedIntervalUnit switch
-        {
-            ClickIntervalUnit.Milliseconds => 1m,
-            ClickIntervalUnit.Seconds => 1000m,
-            ClickIntervalUnit.Minutes => 60000m,
-            _ => 1m
-        };
 
         decimal rawMs;
         try
         {
-            rawMs = (decimal)value * multiplier;
+            rawMs = value * multiplier;
         }
         catch (OverflowException)
         {
@@ -622,7 +741,8 @@ public sealed class MainViewModel : ViewModelBase
             return false;
         }
 
-        intervalMs = (int)Math.Round(rawMs, MidpointRounding.AwayFromZero);
+        // 向上取整，保证实际间隔不会短于用户输入的时间。
+        intervalMs = decimal.ToInt32(decimal.Ceiling(rawMs));
 
         if (intervalMs < MinIntervalMilliseconds)
         {
@@ -633,9 +753,62 @@ public sealed class MainViewModel : ViewModelBase
         return true;
     }
 
+    private bool TryParseIntervalValue(
+        out decimal value,
+        out string errorMessage)
+    {
+        value = 0;
+        errorMessage = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(IntervalValue))
+        {
+            errorMessage = "请输入连点间隔。";
+            return false;
+        }
+
+        if (!decimal.TryParse(
+                IntervalValue,
+                NumberStyles.AllowDecimalPoint,
+                CultureInfo.InvariantCulture,
+                out value))
+        {
+            errorMessage = "连点间隔格式无效，请输入正数（小数点使用 .）。";
+            return false;
+        }
+
+        if (value <= 0)
+        {
+            errorMessage = "连点间隔必须为正数。";
+            return false;
+        }
+
+        return true;
+    }
+
     private static string GetKeyDisplayName(Key key)
     {
-        return key == Key.None ? "未设置" : key.ToString();
+        return key switch
+        {
+            Key.None => "未设置",
+            Key.Back => "Backspace",
+            Key.Return => "Enter",
+            Key.Capital => "Caps Lock",
+            Key.Prior => "Page Up",
+            Key.Next => "Page Down",
+            Key.Snapshot => "Print Screen",
+            Key.Scroll => "Scroll Lock",
+            Key.LeftCtrl => "Left Ctrl",
+            Key.RightCtrl => "Right Ctrl",
+            Key.LeftShift => "Left Shift",
+            Key.RightShift => "Right Shift",
+            Key.LeftAlt => "Left Alt",
+            Key.RightAlt => "Right Alt",
+            Key.LWin => "Left Windows",
+            Key.RWin => "Right Windows",
+            >= Key.D0 and <= Key.D9 => ((int)key - (int)Key.D0).ToString(
+                CultureInfo.InvariantCulture),
+            _ => key.ToString()
+        };
     }
 
     private void SetStatus(string message, bool isError = false)
@@ -651,6 +824,8 @@ public sealed class MainViewModel : ViewModelBase
         OnPropertyChanged(nameof(CanApplyHotkey));
         OnPropertyChanged(nameof(IsConfigurationEnabled));
         OnPropertyChanged(nameof(IntervalPreviewText));
+        OnPropertyChanged(nameof(IsIntervalValid));
+        OnPropertyChanged(nameof(IntervalValidationText));
 
         _startCommand.RaiseCanExecuteChanged();
         _stopCommand.RaiseCanExecuteChanged();

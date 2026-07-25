@@ -2,49 +2,75 @@ using AutoClicker.Models;
 
 namespace AutoClicker.Services;
 
+/// <summary>
+/// 在后台线程上执行连点循环，并集中管理每次运行的取消与清理。
+/// </summary>
 public sealed class AutoClickService : IAutoClickService
 {
     private readonly IInputSimulationService _inputSimulationService;
     private readonly SemaphoreSlim _stateLock = new(1, 1);
 
-    private CancellationTokenSource? _cts;
-    private Task? _workerTask;
+    private RunContext? _currentRun;
+    private int _isRunning;
+    private int _currentRunVersion;
     private int _runVersionSeed;
 
     public AutoClickService(IInputSimulationService inputSimulationService)
     {
-        _inputSimulationService = inputSimulationService;
+        _inputSimulationService = inputSimulationService
+            ?? throw new ArgumentNullException(nameof(inputSimulationService));
     }
 
     public event EventHandler<AutoClickFaultedEventArgs>? Faulted;
 
-    public bool IsRunning { get; private set; }
+    public bool IsRunning => Volatile.Read(ref _isRunning) == 1;
 
-    public int CurrentRunVersion { get; private set; }
+    public int CurrentRunVersion => Volatile.Read(ref _currentRunVersion);
 
     /// <summary>
-    /// 启动连点循环。该方法会防止重复启动。
+    /// 创建一次独立运行。Task.Run 保证 SendInput 不会占用 WPF UI 线程。
     /// </summary>
     public async Task StartAsync(AutoClickConfiguration configuration)
     {
-        await _stateLock.WaitAsync();
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        if (configuration.IntervalMilliseconds <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(configuration),
+                "连点间隔必须大于零。");
+        }
+
+        await _stateLock.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (IsRunning)
+            if (_currentRun is not null)
             {
                 throw new InvalidOperationException("连点任务已在运行。");
             }
 
-            var cts = new CancellationTokenSource();
-            var runVersion = NextRunVersion();
-            var workerTask = RunLoopAsync(configuration, cts.Token);
+            var context = new RunContext(
+                configuration,
+                new CancellationTokenSource(),
+                NextRunVersion());
 
-            _cts = cts;
-            _workerTask = workerTask;
-            CurrentRunVersion = runVersion;
-            IsRunning = true;
+            _currentRun = context;
+            Volatile.Write(ref _currentRunVersion, context.RunVersion);
+            Volatile.Write(ref _isRunning, 1);
 
-            _ = ObserveWorkerAsync(workerTask, cts, runVersion);
+            try
+            {
+                context.WorkerTask = Task.Run(
+                    () => RunWorkerAsync(context),
+                    CancellationToken.None);
+            }
+            catch
+            {
+                _currentRun = null;
+                Volatile.Write(ref _isRunning, 0);
+                context.Cancellation.Dispose();
+                throw;
+            }
         }
         finally
         {
@@ -53,49 +79,91 @@ public sealed class AutoClickService : IAutoClickService
     }
 
     /// <summary>
-    /// 安全停止连点循环。可等待后台任务完整退出。
-    /// 清理所有权：只有成功从当前状态中“摘除” _workerTask/_cts 的路径才负责 Dispose CTS。
+    /// 立即发出取消信号，并等待当前后台任务结束。
     /// </summary>
     public async Task StopAsync()
     {
-        Task? workerTask;
-        CancellationTokenSource? cts;
-        bool ownsCleanup;
+        RunContext? context;
 
-        await _stateLock.WaitAsync();
+        await _stateLock.WaitAsync().ConfigureAwait(false);
         try
         {
-            ownsCleanup = TryDetachCurrentRun(out workerTask, out cts);
+            context = _currentRun;
+            if (context is null)
+            {
+                Volatile.Write(ref _isRunning, 0);
+                return;
+            }
+
+            // Cancel 在等待 WorkerTask 前执行，因此可立即中断 Task.Delay。
+            context.Cancellation.Cancel();
         }
         finally
         {
             _stateLock.Release();
         }
 
-        if (!ownsCleanup || workerTask is null || cts is null)
+        if (context.WorkerTask is not null)
         {
-            return;
-        }
-
-        try
-        {
-            cts.Cancel();
-            await workerTask;
-        }
-        catch (OperationCanceledException) when (cts.IsCancellationRequested)
-        {
-            // 正常取消路径
-        }
-        finally
-        {
-            cts.Dispose();
+            await context.WorkerTask.ConfigureAwait(false);
         }
     }
 
-    private async Task RunLoopAsync(AutoClickConfiguration configuration, CancellationToken token)
+    private async Task RunWorkerAsync(RunContext context)
     {
-        while (!token.IsCancellationRequested)
+        Exception? fault = null;
+
+        try
         {
+            await RunLoopAsync(
+                    context.Configuration,
+                    context.Cancellation.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (context.Cancellation.IsCancellationRequested)
+        {
+            // 用户主动停止，是正常退出路径。
+        }
+        catch (Exception ex)
+        {
+            fault = ex;
+        }
+
+        var wasCurrentRun = false;
+
+        await _stateLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            wasCurrentRun = ReferenceEquals(_currentRun, context);
+            if (wasCurrentRun)
+            {
+                _currentRun = null;
+                Volatile.Write(ref _isRunning, 0);
+            }
+        }
+        finally
+        {
+            _stateLock.Release();
+            context.Cancellation.Dispose();
+        }
+
+        if (fault is not null && wasCurrentRun)
+        {
+            Faulted?.Invoke(
+                this,
+                new AutoClickFaultedEventArgs(fault, context.RunVersion));
+        }
+    }
+
+    private async Task RunLoopAsync(
+        AutoClickConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            // 在每次 SendInput 之前检查，停止后不会开始下一次输入。
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (configuration.TriggerMode == TriggerMode.Mouse)
             {
                 _inputSimulationService.ClickMouse(configuration.MouseButton);
@@ -105,74 +173,11 @@ public sealed class AutoClickService : IAutoClickService
                 _inputSimulationService.PressKey(configuration.KeyboardVirtualKey);
             }
 
-            await Task.Delay(configuration.IntervalMilliseconds, token);
+            await Task.Delay(
+                    configuration.IntervalMilliseconds,
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
-    }
-
-    private async Task ObserveWorkerAsync(Task workerTask, CancellationTokenSource cts, int runVersion)
-    {
-        Exception? fault = null;
-
-        try
-        {
-            await workerTask;
-        }
-        catch (OperationCanceledException) when (cts.IsCancellationRequested)
-        {
-            // 正常取消
-        }
-        catch (Exception ex)
-        {
-            fault = ex;
-        }
-
-        bool ownsCleanup;
-
-        await _stateLock.WaitAsync();
-        try
-        {
-            ownsCleanup = ReferenceEquals(_workerTask, workerTask) && ReferenceEquals(_cts, cts);
-            if (ownsCleanup)
-            {
-                _workerTask = null;
-                _cts = null;
-                IsRunning = false;
-            }
-        }
-        finally
-        {
-            _stateLock.Release();
-        }
-
-        if (ownsCleanup)
-        {
-            cts.Dispose();
-        }
-
-        if (fault is not null)
-        {
-            Faulted?.Invoke(this, new AutoClickFaultedEventArgs(fault, runVersion));
-        }
-    }
-
-    /// <summary>
-    /// 尝试从服务当前状态中摘除当前运行实例。成功摘除的一方拥有后续清理责任。
-    /// </summary>
-    private bool TryDetachCurrentRun(out Task? workerTask, out CancellationTokenSource? cts)
-    {
-        workerTask = _workerTask;
-        cts = _cts;
-
-        if (workerTask is null || cts is null)
-        {
-            IsRunning = false;
-            return false;
-        }
-
-        _workerTask = null;
-        _cts = null;
-        IsRunning = false;
-        return true;
     }
 
     private int NextRunVersion()
@@ -184,5 +189,26 @@ public sealed class AutoClickService : IAutoClickService
 
         _runVersionSeed++;
         return _runVersionSeed;
+    }
+
+    private sealed class RunContext
+    {
+        public RunContext(
+            AutoClickConfiguration configuration,
+            CancellationTokenSource cancellation,
+            int runVersion)
+        {
+            Configuration = configuration;
+            Cancellation = cancellation;
+            RunVersion = runVersion;
+        }
+
+        public AutoClickConfiguration Configuration { get; }
+
+        public CancellationTokenSource Cancellation { get; }
+
+        public int RunVersion { get; }
+
+        public Task? WorkerTask { get; set; }
     }
 }

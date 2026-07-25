@@ -24,6 +24,8 @@ public sealed class GlobalHotkeyService : IHotkeyService
     /// </summary>
     public void Initialize(Window window)
     {
+        ArgumentNullException.ThrowIfNull(window);
+
         if (_windowHandle != IntPtr.Zero)
         {
             return;
@@ -31,7 +33,13 @@ public sealed class GlobalHotkeyService : IHotkeyService
 
         _windowHandle = new WindowInteropHelper(window).Handle;
         _hwndSource = HwndSource.FromHwnd(_windowHandle);
-        _hwndSource?.AddHook(WndProc);
+        if (_windowHandle == IntPtr.Zero || _hwndSource is null)
+        {
+            _windowHandle = IntPtr.Zero;
+            throw new InvalidOperationException("无法获取主窗口句柄，不能注册全局热键。");
+        }
+
+        _hwndSource.AddHook(WndProc);
     }
 
     /// <summary>
@@ -84,7 +92,7 @@ public sealed class GlobalHotkeyService : IHotkeyService
 
         if (hadOldKey)
         {
-            if (TryRegisterInternal(oldKey, out _))
+            if (TryRegisterInternal(oldKey, out var rollbackError))
             {
                 CurrentHotkey = oldKey;
                 _isRegistered = true;
@@ -94,6 +102,8 @@ public sealed class GlobalHotkeyService : IHotkeyService
                 // 回滚失败时，明确处于未注册状态
                 _isRegistered = false;
                 CurrentHotkey = Key.None;
+                errorMessage =
+                    $"{errorMessage} 同时无法恢复原热键：{rollbackError}";
             }
         }
 
@@ -115,6 +125,7 @@ public sealed class GlobalHotkeyService : IHotkeyService
         }
 
         _windowHandle = IntPtr.Zero;
+        CurrentHotkey = Key.None;
     }
 
     private bool TryRegisterInternal(Key key, out string errorMessage)
@@ -138,7 +149,9 @@ public sealed class GlobalHotkeyService : IHotkeyService
         {
             var errorCode = Marshal.GetLastWin32Error();
             var error = new Win32Exception(errorCode);
-            errorMessage = $"RegisterHotKey 失败：{error.Message} (错误码 {errorCode})";
+            errorMessage = errorCode == 1409
+                ? "该按键已被系统或其他程序注册为全局热键，请选择其他按键。"
+                : $"RegisterHotKey 失败：{error.Message}（错误码 {errorCode}）。";
             return false;
         }
 

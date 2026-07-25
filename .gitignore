@@ -8,6 +8,7 @@
 # Build outputs
 **/bin/
 **/obj/
+artifacts/
 
 # Rider / VS Code
 .idea/

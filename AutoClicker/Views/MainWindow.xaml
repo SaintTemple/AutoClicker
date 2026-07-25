@@ -6,12 +6,15 @@
         xmlns:models="clr-namespace:AutoClicker.Models"
         xmlns:converters="clr-namespace:AutoClicker.Converters"
         mc:Ignorable="d"
-        Title="AutoClicker"
-        Width="760"
-        Height="520"
-        MinWidth="720"
-        MinHeight="500"
-        WindowStartupLocation="CenterScreen">
+        Title="Windows 桌面连点器"
+        Width="780"
+        Height="620"
+        MinWidth="740"
+        MinHeight="540"
+        Icon="/AutoClicker;component/Resources/Icons/autoclicker.ico"
+        WindowStartupLocation="CenterScreen"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True">
 
     <Window.Resources>
         <converters:EnumToBooleanConverter x:Key="EnumToBooleanConverter" />
@@ -19,6 +22,10 @@
         <BooleanToVisibilityConverter x:Key="BoolToVisibilityConverter" />
     </Window.Resources>
 
+    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                  HorizontalScrollBarVisibility="Disabled"
+                  Background="{StaticResource WindowBackgroundBrush}"
+                  BorderThickness="0">
     <Grid Margin="16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -46,6 +53,8 @@
                     <TextBox Grid.Column="1"
                              x:Name="IntervalValueTextBox"
                              Margin="8,0,0,0"
+                             MaxLength="20"
+                             ToolTip="请输入正数，换算后最小间隔为 10 毫秒"
                              Text="{Binding IntervalValue, UpdateSourceTrigger=PropertyChanged}"
                              PreviewTextInput="IntervalValueTextBox_PreviewTextInput" />
                     <ComboBox Grid.Column="2"
@@ -59,9 +68,34 @@
                     <TextBlock Grid.Column="3"
                                Margin="12,0,0,0"
                                VerticalAlignment="Center"
-                               Foreground="{StaticResource MutedForegroundBrush}"
-                               Text="{Binding IntervalPreviewText}" />
+                               Text="{Binding IntervalPreviewText}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Foreground" Value="{StaticResource MutedForegroundBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsIntervalValid}" Value="False">
+                                        <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
                 </Grid>
+
+                <TextBlock Margin="0,8,0,0"
+                           Foreground="{StaticResource DangerBrush}"
+                           Text="{Binding IntervalValidationText}">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Visibility" Value="Visible" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsIntervalValid}" Value="True">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
 
                 <TextBlock Margin="0,10,0,0"
                            Foreground="{StaticResource MutedForegroundBrush}"
@@ -182,16 +216,30 @@
 
                 <Button Grid.Column="0"
                         Content="开始"
+                        ToolTip="开始后台连点"
                         Style="{StaticResource PrimaryButtonStyle}"
                         Command="{Binding StartCommand}" />
 
                 <Button Grid.Column="1"
                         Margin="12,0,0,0"
                         Content="停止"
+                        ToolTip="立即取消后台连点"
                         Style="{StaticResource DangerButtonStyle}"
                         Command="{Binding StopCommand}" />
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Right">
+                    <Ellipse Width="8" Height="8" Margin="0,0,8,0">
+                        <Ellipse.Style>
+                            <Style TargetType="Ellipse">
+                                <Setter Property="Fill" Value="{StaticResource MutedForegroundBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsRunning}" Value="True">
+                                        <Setter Property="Fill" Value="{StaticResource AccentBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Ellipse.Style>
+                    </Ellipse>
                     <TextBlock Text="当前状态：" Foreground="{StaticResource MutedForegroundBrush}" />
                     <TextBlock Margin="6,0,0,0" Text="{Binding CurrentStatusText}">
                         <TextBlock.Style>
@@ -226,4 +274,5 @@
             </TextBlock>
         </Border>
     </Grid>
+    </ScrollViewer>
 </Window>
