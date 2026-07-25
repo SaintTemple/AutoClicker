@@ -1,0 +1,229 @@
+<Window x:Class="AutoClicker.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:models="clr-namespace:AutoClicker.Models"
+        xmlns:converters="clr-namespace:AutoClicker.Converters"
+        mc:Ignorable="d"
+        Title="AutoClicker"
+        Width="760"
+        Height="520"
+        MinWidth="720"
+        MinHeight="500"
+        WindowStartupLocation="CenterScreen">
+
+    <Window.Resources>
+        <converters:EnumToBooleanConverter x:Key="EnumToBooleanConverter" />
+        <converters:InverseBooleanConverter x:Key="InverseBooleanConverter" />
+        <BooleanToVisibilityConverter x:Key="BoolToVisibilityConverter" />
+    </Window.Resources>
+
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0"
+                Style="{StaticResource PanelBorderStyle}"
+                IsEnabled="{Binding IsConfigurationEnabled}">
+            <StackPanel>
+                <TextBlock Text="1. 连点间隔设置" Style="{StaticResource SectionTitleTextStyle}" />
+                <Grid Margin="0,8,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="120" />
+                        <ColumnDefinition Width="160" />
+                        <ColumnDefinition Width="160" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Column="0" VerticalAlignment="Center" Text="间隔数值" />
+                    <TextBox Grid.Column="1"
+                             x:Name="IntervalValueTextBox"
+                             Margin="8,0,0,0"
+                             Text="{Binding IntervalValue, UpdateSourceTrigger=PropertyChanged}"
+                             PreviewTextInput="IntervalValueTextBox_PreviewTextInput" />
+                    <ComboBox Grid.Column="2"
+                              Margin="8,0,0,0"
+                              SelectedValue="{Binding SelectedIntervalUnit, Mode=TwoWay}"
+                              SelectedValuePath="Tag">
+                        <ComboBoxItem Content="毫秒" Tag="{x:Static models:ClickIntervalUnit.Milliseconds}" />
+                        <ComboBoxItem Content="秒" Tag="{x:Static models:ClickIntervalUnit.Seconds}" />
+                        <ComboBoxItem Content="分钟" Tag="{x:Static models:ClickIntervalUnit.Minutes}" />
+                    </ComboBox>
+                    <TextBlock Grid.Column="3"
+                               Margin="12,0,0,0"
+                               VerticalAlignment="Center"
+                               Foreground="{StaticResource MutedForegroundBrush}"
+                               Text="{Binding IntervalPreviewText}" />
+                </Grid>
+
+                <TextBlock Margin="0,10,0,0"
+                           Foreground="{StaticResource MutedForegroundBrush}"
+                           Text="{Binding PrecisionNotice}" />
+            </StackPanel>
+        </Border>
+
+        <Border Grid.Row="1"
+                Margin="0,12,0,0"
+                Style="{StaticResource PanelBorderStyle}"
+                IsEnabled="{Binding IsConfigurationEnabled}">
+            <StackPanel>
+                <TextBlock Text="2. 按键类型和按键选择" Style="{StaticResource SectionTitleTextStyle}" />
+
+                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                    <RadioButton Content="鼠标连点"
+                                 GroupName="TriggerMode"
+                                 IsChecked="{Binding SelectedTriggerMode, Converter={StaticResource EnumToBooleanConverter}, ConverterParameter={x:Static models:TriggerMode.Mouse}}" />
+                    <RadioButton Content="键盘连按"
+                                 Margin="24,0,0,0"
+                                 GroupName="TriggerMode"
+                                 IsChecked="{Binding SelectedTriggerMode, Converter={StaticResource EnumToBooleanConverter}, ConverterParameter={x:Static models:TriggerMode.Keyboard}}" />
+                </StackPanel>
+
+                <Grid Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Grid.Column="0"
+                                Visibility="{Binding IsMouseMode, Converter={StaticResource BoolToVisibilityConverter}}">
+                        <TextBlock Foreground="{StaticResource MutedForegroundBrush}" Text="鼠标按键" />
+                        <ComboBox Width="180"
+                                  Margin="0,6,0,0"
+                                  SelectedValue="{Binding SelectedMouseButton, Mode=TwoWay}"
+                                  SelectedValuePath="Tag">
+                            <ComboBoxItem Content="鼠标左键" Tag="{x:Static models:MouseButtonType.Left}" />
+                            <ComboBoxItem Content="鼠标右键" Tag="{x:Static models:MouseButtonType.Right}" />
+                            <ComboBoxItem Content="鼠标中键" Tag="{x:Static models:MouseButtonType.Middle}" />
+                        </ComboBox>
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="1"
+                                Visibility="{Binding IsKeyboardMode, Converter={StaticResource BoolToVisibilityConverter}}">
+                        <TextBlock Foreground="{StaticResource MutedForegroundBrush}" Text="键盘按键" />
+                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                            <Border Width="150" Height="32" Style="{StaticResource InputLikeBorderStyle}">
+                                <TextBlock VerticalAlignment="Center"
+                                           Margin="10,0,0,0"
+                                           Text="{Binding SelectedKeyboardKeyDisplay}" />
+                            </Border>
+                            <Button Content="录入按键"
+                                    Margin="10,0,0,0"
+                                    Width="96"
+                                    Command="{Binding CaptureTriggerKeyCommand}" />
+                        </StackPanel>
+                    </StackPanel>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <Border Grid.Row="2"
+                Margin="0,12,0,0"
+                Style="{StaticResource PanelBorderStyle}"
+                IsEnabled="{Binding IsConfigurationEnabled}">
+            <StackPanel>
+                <TextBlock Text="3. 启停快捷键设置" Style="{StaticResource SectionTitleTextStyle}" />
+
+                <Grid Margin="0,8,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="120" />
+                        <ColumnDefinition Width="180" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Column="0" VerticalAlignment="Center" Text="当前热键" />
+                    <Border Grid.Column="1" Style="{StaticResource InputLikeBorderStyle}" Height="32" Margin="8,0,0,0">
+                        <TextBlock VerticalAlignment="Center" Margin="10,0,0,0" Text="{Binding HotkeyDisplay}" />
+                    </Border>
+                </Grid>
+
+                <Grid Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="120" />
+                        <ColumnDefinition Width="180" />
+                        <ColumnDefinition Width="100" />
+                        <ColumnDefinition Width="100" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Column="0" VerticalAlignment="Center" Text="待应用热键" />
+                    <Border Grid.Column="1" Style="{StaticResource InputLikeBorderStyle}" Height="32" Margin="8,0,0,0">
+                        <TextBlock VerticalAlignment="Center" Margin="10,0,0,0" Text="{Binding PendingHotkeyDisplay}" />
+                    </Border>
+
+                    <Button Grid.Column="2"
+                            Margin="10,0,0,0"
+                            Width="90"
+                            Content="录入热键"
+                            Command="{Binding CaptureHotkeyCommand}" />
+                    <Button Grid.Column="3"
+                            Margin="10,0,0,0"
+                            Width="90"
+                            Content="应用热键"
+                            Command="{Binding ApplyHotkeyCommand}" />
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <Border Grid.Row="3" Margin="0,12,0,0" Style="{StaticResource PanelBorderStyle}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="120" />
+                    <ColumnDefinition Width="120" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Button Grid.Column="0"
+                        Content="开始"
+                        Style="{StaticResource PrimaryButtonStyle}"
+                        Command="{Binding StartCommand}" />
+
+                <Button Grid.Column="1"
+                        Margin="12,0,0,0"
+                        Content="停止"
+                        Style="{StaticResource DangerButtonStyle}"
+                        Command="{Binding StopCommand}" />
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Right">
+                    <TextBlock Text="当前状态：" Foreground="{StaticResource MutedForegroundBrush}" />
+                    <TextBlock Margin="6,0,0,0" Text="{Binding CurrentStatusText}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Foreground" Value="{StaticResource MutedForegroundBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsRunning}" Value="True">
+                                        <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="4" />
+
+        <Border Grid.Row="5" Margin="0,12,0,0" Style="{StaticResource PanelBorderStyle}">
+            <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="Foreground" Value="{StaticResource MutedForegroundBrush}" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsErrorMessage}" Value="True">
+                                <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+        </Border>
+    </Grid>
+</Window>

@@ -1,0 +1,47 @@
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build outputs
+**/bin/
+**/obj/
+
+# Rider / VS Code
+.idea/
+.vscode/
+
+# Logs & temp
+*.log
+*.tmp
+*.temp
+*.cache
+*.bak
+*.swp
+*~
+
+# Test and coverage artifacts
+TestResults/
+*.trx
+coverage/
+*.coverage
+*.coveragexml
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+
+# OS files
+Thumbs.db
+Desktop.ini
+
+# Local secrets / env
+.env
+.env.*
+*.pfx
+*.snk
+secrets.json
+appsettings.*.local.json
