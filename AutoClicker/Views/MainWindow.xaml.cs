@@ -1,10 +1,12 @@
 using AutoClicker.Services;
 using AutoClicker.ViewModels;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Threading;
 
 namespace AutoClicker.Views;
 
@@ -54,15 +56,30 @@ public partial class MainWindow : Window
         }
 
         _isShutdownInProgress = true;
+
+        // 先从视觉上立即退出，再在后台完成安全清理。
+        // 不直接终止进程，避免连点任务恰好处于输入模拟过程中。
+        ShowInTaskbar = false;
+        Hide();
+
         try
         {
             await _viewModel.ShutdownAsync();
+        }
+        catch (Exception ex)
+        {
+            // 关闭阶段不再弹出窗口；记录诊断信息并确保应用最终退出。
+            Debug.WriteLine($"关闭清理失败：{ex}");
         }
         finally
         {
             _allowClose = true;
             _isShutdownInProgress = false;
-            Close();
+
+            // 避免在第一次 Closing 事件尚未返回时重入 Close。
+            _ = Dispatcher.BeginInvoke(
+                Close,
+                DispatcherPriority.Send);
         }
     }
 

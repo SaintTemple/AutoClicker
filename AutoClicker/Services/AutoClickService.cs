@@ -11,6 +11,7 @@ public sealed class AutoClickService : IAutoClickService
     private readonly SemaphoreSlim _stateLock = new(1, 1);
 
     private RunContext? _currentRun;
+    private CancellationTokenSource? _currentCancellation;
     private int _isRunning;
     private int _currentRunVersion;
     private int _runVersionSeed;
@@ -55,6 +56,7 @@ public sealed class AutoClickService : IAutoClickService
                 NextRunVersion());
 
             _currentRun = context;
+            Volatile.Write(ref _currentCancellation, context.Cancellation);
             Volatile.Write(ref _currentRunVersion, context.RunVersion);
             Volatile.Write(ref _isRunning, 1);
 
@@ -67,6 +69,10 @@ public sealed class AutoClickService : IAutoClickService
             catch
             {
                 _currentRun = null;
+                Interlocked.CompareExchange(
+                    ref _currentCancellation,
+                    null,
+                    context.Cancellation);
                 Volatile.Write(ref _isRunning, 0);
                 context.Cancellation.Dispose();
                 throw;
@@ -76,6 +82,17 @@ public sealed class AutoClickService : IAutoClickService
         {
             _stateLock.Release();
         }
+    }
+
+    /// <summary>
+    /// 关闭程序时使用的非阻塞停止信号。
+    /// CancellationTokenSource.Cancel 是线程安全的；即使清理线程刚好已释放
+    /// CancellationTokenSource，也只需忽略 ObjectDisposedException。
+    /// </summary>
+    public void RequestStop()
+    {
+        var cancellation = Volatile.Read(ref _currentCancellation);
+        TryCancel(cancellation);
     }
 
     /// <summary>
@@ -96,7 +113,7 @@ public sealed class AutoClickService : IAutoClickService
             }
 
             // Cancel 在等待 WorkerTask 前执行，因此可立即中断 Task.Delay。
-            context.Cancellation.Cancel();
+            TryCancel(context.Cancellation);
         }
         finally
         {
@@ -144,6 +161,10 @@ public sealed class AutoClickService : IAutoClickService
         finally
         {
             _stateLock.Release();
+            Interlocked.CompareExchange(
+                ref _currentCancellation,
+                null,
+                context.Cancellation);
             context.Cancellation.Dispose();
         }
 
@@ -189,6 +210,23 @@ public sealed class AutoClickService : IAutoClickService
 
         _runVersionSeed++;
         return _runVersionSeed;
+    }
+
+    private static void TryCancel(CancellationTokenSource? cancellation)
+    {
+        if (cancellation is null)
+        {
+            return;
+        }
+
+        try
+        {
+            cancellation.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // 后台任务可能刚好完成并释放资源，视为已经停止。
+        }
     }
 
     private sealed class RunContext

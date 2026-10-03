@@ -184,7 +184,9 @@ public sealed class MainViewModel : ViewModelBase
     public bool IsRunning => Status == AppStatus.Running;
 
     public bool IsConfigurationEnabled =>
-        Status == AppStatus.Stopped && !IsStartStopBusy;
+        Status == AppStatus.Stopped
+        && !IsStartStopBusy
+        && Volatile.Read(ref _isShuttingDown) == 0;
 
     public bool IsCapturingKey
     {
@@ -270,6 +272,7 @@ public sealed class MainViewModel : ViewModelBase
         Status == AppStatus.Stopped
         && !IsCapturingKey
         && !IsStartStopBusy
+        && Volatile.Read(ref _isShuttingDown) == 0
         && TryBuildConfiguration(out _, out _);
 
     public bool CanStop => IsRunning && !IsStartStopBusy;
@@ -308,11 +311,23 @@ public sealed class MainViewModel : ViewModelBase
 
         IsCapturingKey = false;
         _captureTarget = CaptureTarget.None;
+        RefreshDerivedState();
+
+        // 必须在第一次 await 之前完成：窗口关闭时立即停止新热键消息，
+        // 并非阻塞地取消正在运行的连点任务。
+        _hotkeyService.HotkeyPressed -= OnHotkeyPressed;
+        _autoClickService.Faulted -= OnAutoClickFaulted;
+        _hotkeyService.Dispose();
+        _autoClickService.RequestStop();
 
         try
         {
             await ExecuteStartStopLockedAsync(async () =>
             {
+                // 若关闭请求与启动操作竞争，第一次 RequestStop 可能早于任务创建；
+                // 获得启停锁后再次取消，确保不会在窗口隐藏后留下新任务。
+                _autoClickService.RequestStop();
+
                 if (_autoClickService.IsRunning)
                 {
                     Status = AppStatus.Stopping;
@@ -326,12 +341,6 @@ public sealed class MainViewModel : ViewModelBase
         {
             Status = _autoClickService.IsRunning ? AppStatus.Running : AppStatus.Stopped;
             SetStatus($"关闭时停止任务失败：{ex.Message}", true);
-        }
-        finally
-        {
-            _hotkeyService.HotkeyPressed -= OnHotkeyPressed;
-            _autoClickService.Faulted -= OnAutoClickFaulted;
-            _hotkeyService.Dispose();
         }
     }
 
@@ -415,6 +424,11 @@ public sealed class MainViewModel : ViewModelBase
     {
         await ExecuteStartStopLockedAsync(async () =>
         {
+            if (Volatile.Read(ref _isShuttingDown) != 0)
+            {
+                return;
+            }
+
             if (IsCapturingKey)
             {
                 SetStatus("正在录入按键，无法启动。", true);
@@ -516,6 +530,11 @@ public sealed class MainViewModel : ViewModelBase
         {
             await TryExecuteStartStopLockedAsync(async () =>
             {
+                if (Volatile.Read(ref _isShuttingDown) != 0)
+                {
+                    return;
+                }
+
                 if (IsRunning)
                 {
                     Status = AppStatus.Stopping;

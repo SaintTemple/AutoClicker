@@ -9,7 +9,7 @@
     <AssemblyName>AutoClicker</AssemblyName>
     <RootNamespace>AutoClicker</RootNamespace>
     <Platforms>AnyCPU</Platforms>
-    <Version>1.0.0</Version>
+    <Version>1.0.1</Version>
     <Authors>SaintTemple</Authors>
     <Product>Windows 桌面连点器</Product>
     <Description>基于 C#、WPF 和 MVVM 的 Windows 桌面连点器。</Description>
